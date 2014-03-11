@@ -1,0 +1,14 @@
+﻿<Window x:Class="DrawSomeDots.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MainWindow" Height="350" Width="525">
+    <Grid Opacity="100">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="30" />
+        </Grid.RowDefinitions>
+        <Canvas Grid.Row="0" Name="cPaint" VerticalAlignment="Stretch" HorizontalAlignment="Stretch"></Canvas>
+        <Button Name="cmdGo" Content="Go" Grid.Row="1" Height="22" HorizontalAlignment="Left" Margin="314,6,0,0"  VerticalAlignment="Top" Width="181" Click="cmdGo_Click" />
+        <TextBox Name="txtNum" Grid.Row="1" Height="20" HorizontalAlignment="Left" Margin="118,6,0,0" VerticalAlignment="Top" Width="169" />
+    </Grid>
+</Window>
