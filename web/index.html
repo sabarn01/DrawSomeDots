@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Draw Some Dots</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 16px;
+        background: #f4f4f4;
+        color: #222;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px 0;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .controls label {
+        font-size: 13px;
+      }
+      .controls input[type="number"] {
+        width: 120px;
+        padding: 4px;
+        font-size: 14px;
+      }
+      .controls select,
+      .controls button {
+        padding: 4px 10px;
+        font-size: 14px;
+      }
+      .controls label.range {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+      }
+      .controls label.range input[type="range"] {
+        width: 120px;
+      }
+      button:disabled,
+      input:disabled,
+      select:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .progress-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+      .progress-row label {
+        width: 80px;
+      }
+      progress {
+        flex: 1;
+        height: 14px;
+      }
+      #elapsed {
+        font-variant-numeric: tabular-nums;
+        font-size: 13px;
+        margin-bottom: 12px;
+      }
+      #canvas-wrap {
+        background: white;
+        border: 1px solid #ccc;
+        padding: 8px;
+        /* Fill remaining viewport height below the controls */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        max-width: 100%;
+      }
+      /* Scale the canvas so the whole number is visible in the current
+         viewport regardless of its natural pixel size. Aspect ratio is
+         preserved. */
+      #main {
+        display: block;
+        max-width: 100%;
+        max-height: calc(100vh - 220px);
+        width: auto;
+        height: auto;
+        object-fit: contain;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Draw Some Dots</h1>
+    <div class="controls">
+      <label>
+        Number:
+        <input id="num" type="number" min="1" value="42" />
+      </label>
+      <label>
+        Font:
+        <select id="font">
+          <option>Comic Sans MS</option>
+          <option>Arial</option>
+          <option>Georgia</option>
+          <option>Courier New</option>
+          <option>Impact</option>
+          <option>Verdana</option>
+        </select>
+      </label>
+      <label class="range">
+        Min dot: <span id="min-val">4</span>px
+        <input id="min-size" type="range" min="2" max="30" value="4" />
+      </label>
+      <label class="range">
+        Max dot: <span id="max-val">7</span>px
+        <input id="max-size" type="range" min="2" max="30" value="7" />
+      </label>
+      <button id="go">Go</button>
+      <button id="save" disabled>Save PNG</button>
+    </div>
+    <div class="progress-row">
+      <label>Letter:</label>
+      <progress id="pb-letter" value="0" max="1"></progress>
+      <span id="pb-letter-txt">0 / 0</span>
+    </div>
+    <div class="progress-row">
+      <label>Total:</label>
+      <progress id="pb-total" value="0" max="1"></progress>
+      <span id="pb-total-txt">0 / 0</span>
+    </div>
+    <div id="elapsed">Elapsed: 0.00s</div>
+    <div id="canvas-wrap">
+      <canvas id="main" width="400" height="200"></canvas>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
