@@ -24,15 +24,15 @@ namespace DrawDots
         public int NumToDraw { get; set; }
         public int TotalDrawn { get; set; }
 
-
-        void DR_LetterUpddate(int NumberDrawn, int NumberToDraw, Bitmap arg2)
+        
+        void DR_LetterUpddate(int NumberDrawn,int NumberToDraw, Bitmap arg2)
         {
-            int Division = NumberToDraw / 100;
-            if (Division < 10)
+            int Division = NumberToDraw/100;
+            if(Division < 10)
             {
                 Division = 1;
             }
-
+            
             if (NumberDrawn % Division != 0)
                 return;
             try
@@ -47,13 +47,13 @@ namespace DrawDots
             try
             {
                 //if (NumberDrawn % 100 == 0)
-                //arg2.Save("C:\\Users\\Adam\\out.bmp");
+                    //arg2.Save("C:\\Users\\Adam\\out.bmp");
             }
             catch
             { }
             Application.DoEvents();
             pictureBox1.Image = arg2;
-
+            
             Invalidate();
             Refresh();
         }
@@ -65,49 +65,10 @@ namespace DrawDots
             pbTotal.Maximum = x;
             NumToDraw = x;
             DotRenderer DR = new DotRenderer(x);
-            DR.LetterUpddate += new Action<int, int, Bitmap>(DR_LetterUpddate);
+            DR.LetterUpddate += new Action<int,int, Bitmap>(DR_LetterUpddate);
             DR.ImageUpdated += new Action<int, Bitmap>(DR_ImageUpdated);
             Start = DateTime.Now;
             DR.DrawIt();
-            /*try
-            {
-                SaveFileDialog SFD = new SaveFileDialog();
-                SFD.Filter = "PNG Files (*.png)|";
-                SFD.FilterIndex = 0;
-                SFD.InitialDirectory = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
-                if (SFD.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
-
-
-
-                    string FileName = SFD.FileName;
-                    FileName = System.IO.Path.ChangeExtension(FileName, "png");
-                    //DR.Image.Save(@"C:\users\adam\out.bmp");
-                    pictureBox2.Image.Save(FileName, System.Drawing.Imaging.ImageFormat.Png);
-                }
-            }
-            catch (Exception exp)
-            {
-                MessageBox.Show(exp.Message);
-            }
-            */
-        }
-
-        void DR_ImageUpdated(int NumDrawn, Bitmap arg2)
-        {
-            TotalDrawn = NumDrawn;
-            pictureBox2.Image = arg2;
-            Application.DoEvents();
-        }
-
-        private void button2_Click(object sender, EventArgs e)
-        {
-            pictureBox1.Image = null;
-            pictureBox2.Image = null;
-        }
-
-        private void btnSave_Click(object sender, EventArgs e)
-        {
             try
             {
                 SaveFileDialog SFD = new SaveFileDialog();
@@ -118,15 +79,20 @@ namespace DrawDots
                 {
                     string FileName = SFD.FileName;
                     FileName = System.IO.Path.ChangeExtension(FileName, "png");
-                    //DR.Image.Save(@"C:\users\adam\out.bmp");
                     pictureBox2.Image.Save(FileName, System.Drawing.Imaging.ImageFormat.Png);
                 }
             }
             catch (Exception exp)
             {
                 MessageBox.Show(exp.Message);
-
             }
+        }
+
+        void DR_ImageUpdated(int NumDrawn, Bitmap arg2)
+        {
+            TotalDrawn = NumDrawn;
+            pictureBox2.Image = arg2;
+            Application.DoEvents();
         }
     }
 }
