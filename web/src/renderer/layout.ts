@@ -6,23 +6,37 @@ import {
   INT_Offset,
   PackingCoefficient,
   LetterGrowFactor,
+  MaxLetterSize,
 } from "./constants";
 
 /**
- * Compute the letter size needed so that each digit's allotment of dots can
- * physically fit inside the digit's shape. Uses avg fill % of the digits
- * used, avg circle area, and an empirical PackingCoefficient to account for
- * random-packing inefficiency, INT_Offset padding, and glyph boundary loss.
- *
- * The C# original omitted the packing coefficient, which produced letter
- * sizes far too small for larger N; here we apply it up front, and callers
- * (DotRenderer) still grow-and-retry as a safety net.
+ * Turn a chosen letter height into a full LayoutInfo (width, image dims).
+ * Used by the calibration-based estimator (calibrate.ts) and by
+ * growLetterSize.
+ */
+export function layoutFromLetterSize(letterSize: number, digitCount: number): LayoutInfo {
+  const clamped = Math.max(60, Math.min(MaxLetterSize, Math.round(letterSize)));
+  const letterWidth = Math.round(clamped * WidthToHeightFactor);
+  return {
+    letterSize: clamped,
+    letterWidth,
+    imageWidth: letterWidth * digitCount,
+    imageHeight: clamped,
+  };
+}
+
+/**
+ * Fallback estimator for when calibration data isn't available. Uses avg
+ * fill % of the digits, avg circle area, and an empirical
+ * PackingCoefficient. DotRenderer's grow-and-retry cleans up any residual
+ * shortfall.
  */
 export function computeLetterSize(
   number: number,
   fills: number[],
   minCircleSize: number = SmallestCircleSize,
   maxCircleSize: number = MaxCircleSize,
+  packingCoefficient: number = PackingCoefficient,
 ): LayoutInfo {
   const digits = String(number);
   const digitCount = digits.length;
@@ -42,28 +56,20 @@ export function computeLetterSize(
   for (let iter = 0; iter < 60; iter++) {
     const letterArea = testSize * (testSize * WidthToHeightFactor);
     const estimatedCapacity =
-      (letterArea * avgCoverage * PackingCoefficient) / avgCircleArea;
+      (letterArea * avgCoverage * packingCoefficient) / avgCircleArea;
     if (estimatedCapacity >= numberNeededPerLetter) break;
     testSize = Math.floor(testSize * LetterGrowFactor);
   }
 
-  const letterSize = testSize;
-  const letterWidth = Math.round(letterSize * WidthToHeightFactor);
-  const imageWidth = letterWidth * digitCount;
-  const imageHeight = letterSize;
-  return { letterSize, letterWidth, imageWidth, imageHeight };
+  return layoutFromLetterSize(testSize, digitCount);
 }
 
 /**
- * Grow one letter's size (used by DotRenderer's safety-net retry).
+ * Grow one letter's size (used by DotRenderer's safety-net retry). Capped
+ * to MaxLetterSize so we don't produce impossibly large canvases even if
+ * the estimator was wildly wrong.
  */
 export function growLetterSize(current: LayoutInfo, digitCount: number): LayoutInfo {
-  const letterSize = Math.max(current.letterSize + 1, Math.floor(current.letterSize * LetterGrowFactor));
-  const letterWidth = Math.round(letterSize * WidthToHeightFactor);
-  return {
-    letterSize,
-    letterWidth,
-    imageWidth: letterWidth * digitCount,
-    imageHeight: letterSize,
-  };
+  const grown = Math.max(current.letterSize + 1, Math.floor(current.letterSize * LetterGrowFactor));
+  return layoutFromLetterSize(grown, digitCount);
 }

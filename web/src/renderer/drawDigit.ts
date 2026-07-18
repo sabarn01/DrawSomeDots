@@ -1,4 +1,4 @@
-import type { Dot, GlyphMask, LetterProgress } from "./types";
+import type { Dot, GlyphMask, LetterProgress, PlacementAttempt } from "./types";
 import { Quadtree } from "./quadtree";
 import { maskAt, drawFittedGlyph } from "./glyphMask";
 import { INT_Offset, TryMultiplyer } from "./constants";
@@ -69,7 +69,7 @@ export async function drawDigit(
   // it fills in. Uses the same fitted-glyph logic as the mask so the outline
   // aligns exactly with where dots will land.
   ctx.save();
-  drawFittedGlyph(ctx, digit, fontFamily, letterWidth, letterSize, "rgba(0,0,0,0.05)");
+  drawFittedGlyph(ctx, digit, fontFamily, letterWidth, letterSize, "white");
   ctx.restore();
 
   const { bounds } = mask;
@@ -94,18 +94,25 @@ export async function drawDigit(
   let lastYield = performance.now();
 
   // Aggressive-infill state: once random placement fails, we scan the mask
-  // linearly for a free spot. Scanning always from top-left produces an
-  // ugly stripe pattern; instead we start each aggressive-infill run at a
-  // random (x, y) within the glyph bounds and pick a fresh start every
-  // AggressiveResetEvery dots so the infill looks organic.
-  const AggressiveResetEvery = 20;
-  let aggressiveCount = 0;
-  let scanStartX = bounds.x;
-  let scanStartY = bounds.y;
-  const pickScanStart = (): void => {
-    scanStartX = randInt(bounds.x, bounds.x + bounds.width);
-    scanStartY = randInt(bounds.y, bounds.y + bounds.height);
-  };
+  // linearly for a free spot. Keeping the scan cursor persistent across
+  // aggressive placements is critical for large N: without it,
+  // findAnyFreeSpot restarts from a fixed origin on every call and does
+  // O(bounds_area) work per placement → O(N²) total, which is minutes
+  // per digit at N=176k. With a persistent monotonic cursor the total
+  // aggressive-infill work amortises to O(bounds_area + placements).
+  //
+  // Cursor state is stored on the mask's local grid (row-major cells of
+  // size `aggressiveStep`); we advance one cell per placement and wrap
+  // exactly once through the whole bounds.
+  const aggressiveStep = Math.max(1, Math.floor(minCircleSize / 2 + 0.5));
+  const aggressiveCols = Math.max(1, Math.floor(bounds.width / aggressiveStep));
+  const aggressiveRows = Math.max(1, Math.floor(bounds.height / aggressiveStep));
+  const aggressiveTotal = aggressiveRows * aggressiveCols;
+  // Start the cursor at a random cell so the first aggressive dots don't
+  // all land in the top-left corner. Once random probes stop working we
+  // just march sequentially from there.
+  let aggressiveCursor = Math.floor(Math.random() * aggressiveTotal);
+  let aggressiveExhausted = false;
 
   const isInsideGlyph = (cx: number, cy: number, r: number): boolean => {
     if (!maskAt(mask, cx, cy)) return false;
@@ -130,54 +137,109 @@ export async function drawDigit(
     return false;
   };
 
+  // Rolling buffer of recent placement attempts (both successful and failed)
+  // for UI visualization. Kept small so the UI paint cost stays trivial.
+  const AttemptWindow = 40;
+  const attempts: PlacementAttempt[] = [];
+  const recordAttempt = (x: number, y: number, ok: boolean): void => {
+    if (attempts.length >= AttemptWindow) attempts.shift();
+    attempts.push({ x, y, ok });
+  };
+
+  // Rolling throughput measurement: we adapt random-probe budget based on
+  // the actual placement rate observed over the last WindowSize placements.
+  // When placements are cheap (dots landing quickly), random gives us
+  // nice visual variety, so we spend more probes on it. When placements
+  // are expensive (crowded digit, most probes rejected), we cut random
+  // to a bare minimum and defer to aggressive infill.
+  const WindowSize = 64;
+  const recentTimes: number[] = [];
+  const LowRate = 200; // dots/sec below which we consider "struggling"
+  const HighRate = 800; // dots/sec above which random is clearly working
+  const recordPlacement = (): void => {
+    const now = performance.now();
+    recentTimes.push(now);
+    if (recentTimes.length > WindowSize) recentTimes.shift();
+  };
+  const currentRate = (): number => {
+    if (recentTimes.length < 8) return Infinity;
+    const dur = recentTimes[recentTimes.length - 1] - recentTimes[0];
+    return ((recentTimes.length - 1) * 1000) / Math.max(1, dur);
+  };
+  const probeBudget = (): number => {
+    const rate = currentRate();
+    if (rate <= LowRate) return 2;
+    if (rate >= HighRate) return 20;
+    // Linear interpolate between the two rate bands.
+    const t = (rate - LowRate) / (HighRate - LowRate);
+    return Math.max(2, Math.round(2 + t * 18));
+  };
+
   while (placed < target) {
     // Choose radius: full range while we have budget, shrink to smallest when
     // we've used more than TryMultiplyer * target attempts.
     const rMax =
       tryCount < maxTries ? maxCircleSize : minCircleSize;
     const rMin = minCircleSize;
-    const r = randInt(rMin, rMax + 1) / 2 + 0.5; // radius in pixels
+    let r = randInt(rMin, rMax + 1) / 2 + 0.5; // radius in pixels
 
     let attemptedThisDot = 0;
     let accepted = false;
     let cx = 0;
     let cy = 0;
-    while (attemptedThisDot < 40) {
+    // Random-probe budget adapts to observed placement throughput — when
+    // the digit is crowded and placements slow down, we drop straight
+    // through to aggressive infill; when it's still filling fast, we
+    // give random a full 20 probes for variety.
+    const MaxRandomProbes = probeBudget();
+    while (attemptedThisDot < MaxRandomProbes) {
       attemptedThisDot++;
       tryCount++;
       cx = randInt(bounds.x, bounds.x + bounds.width);
       cy = randInt(bounds.y, bounds.y + bounds.height);
-      if (!isInsideGlyph(cx, cy, r)) continue;
-      if (overlaps(cx, cy, r)) continue;
+      if (!isInsideGlyph(cx, cy, r)) {
+        recordAttempt(cx, cy, false);
+        continue;
+      }
+      if (overlaps(cx, cy, r)) {
+        recordAttempt(cx, cy, false);
+        continue;
+      }
       accepted = true;
       break;
     }
 
     if (!accepted) {
-      // Fallback: scan the mask for any free spot, starting from a random
-      // point that we refresh every AggressiveResetEvery dots. Without this
-      // the fallback packs dots into one corner as a stripe pattern.
-      if (aggressiveCount % AggressiveResetEvery === 0) {
-        pickScanStart();
+      // Fallback: sequential scan from the persistent cursor. Amortised
+      // O(1) per placement across the whole aggressive-infill phase.
+      if (aggressiveExhausted) {
+        break; // whole glyph scanned; caller grows letter size + retries
       }
-      aggressiveCount++;
       const found = findAnyFreeSpot(
         mask,
         qt,
         minCircleSize / 2 + 0.5,
         maxCircleSize,
-        scanStartX,
-        scanStartY,
+        aggressiveCursor,
+        aggressiveStep,
+        aggressiveCols,
+        aggressiveRows,
       );
       if (!found) {
-        break; // give up; caller will grow letter size and retry
+        aggressiveExhausted = true;
+        break;
       }
       cx = found.cx;
       cy = found.cy;
-    } else {
-      // Reset aggressive-infill state whenever a random placement succeeds,
-      // so a fresh run of failures picks a fresh start point.
-      aggressiveCount = 0;
+      // findAnyFreeSpot checked "inside glyph" only at the cell center and
+      // computed overlap with the smallest radius, so we MUST place at
+      // that same radius — otherwise we'd overlap neighbours (up to
+      // 1.5px) and spill outside the glyph edge. This costs some visual
+      // variety in the crowded tail of a digit, which is a fine trade.
+      r = minCircleSize / 2 + 0.5;
+      // Advance the cursor just past the found cell so the next call
+      // resumes right after it rather than re-scanning.
+      aggressiveCursor = (found.nextCursor + 1) % aggressiveTotal;
     }
 
     const color = randomColor();
@@ -192,6 +254,8 @@ export async function drawDigit(
     ctx.stroke();
 
     placed++;
+    recordAttempt(cx, cy, true);
+    recordPlacement();
 
     // Time-based progress + yield: fire an update and hand the event loop
     // back to the browser whenever a frame's worth of time has elapsed.
@@ -199,61 +263,60 @@ export async function drawDigit(
     // still runs smoothly for large N.
     const now = performance.now();
     if (now - lastYield >= FrameBudgetMs) {
-      onProgress?.({ digitIndex, drawn: placed, total: target, canvas });
+      onProgress?.({ digitIndex, drawn: placed, total: target, canvas, attempts });
       if (yieldFn) await yieldFn();
       lastYield = performance.now();
     }
   }
 
   if (onProgress) {
-    onProgress({ digitIndex, drawn: placed, total: target, canvas });
+    onProgress({ digitIndex, drawn: placed, total: target, canvas, attempts });
   }
 
   return { canvas, placed, unplaced: target - placed };
 }
 
 /**
- * Scan the glyph mask for a point that satisfies both "inside glyph" and
- * "clear of any placed dot", starting from (startX, startY) and wrapping
- * modulo the bounds so the whole mask is covered exactly once.
+ * Scan the glyph mask starting from `startCursor` (linear index into a
+ * `rows × cols` grid of cells of size `step`) for the next cell that is
+ * both inside the glyph and clear of any placed dot. Wraps through the
+ * full grid exactly once, so the total scan work across all aggressive
+ * placements for one digit is O(rows*cols) rather than O(N*rows*cols).
  *
- * Used as a last-resort placement when random sampling has exhausted its
- * budget. Returns null if no such point exists.
+ * Returns the found (cx, cy) plus the cursor position where it was
+ * found so the caller can resume just past it.
  */
 function findAnyFreeSpot(
   mask: GlyphMask,
   qt: Quadtree,
   r: number,
   maxCircleSize: number,
-  startX: number,
-  startY: number,
-): { cx: number; cy: number } | null {
+  startCursor: number,
+  step: number,
+  cols: number,
+  rows: number,
+): { cx: number; cy: number; nextCursor: number } | null {
   const { bounds } = mask;
-  const step = Math.max(1, Math.floor(r));
-  const rows = Math.max(1, Math.floor(bounds.height / step));
-  const cols = Math.max(1, Math.floor(bounds.width / step));
-  const offX = Math.max(0, Math.floor((startX - bounds.x) / step));
-  const offY = Math.max(0, Math.floor((startY - bounds.y) / step));
-  for (let dy = 0; dy < rows; dy++) {
-    const gy = (dy + offY) % rows;
+  const total = rows * cols;
+  for (let i = 0; i < total; i++) {
+    const c = (startCursor + i) % total;
+    const gy = (c / cols) | 0;
+    const gx = c - gy * cols;
+    const x = bounds.x + gx * step;
     const y = bounds.y + gy * step;
-    for (let dx = 0; dx < cols; dx++) {
-      const gx = (dx + offX) % cols;
-      const x = bounds.x + gx * step;
-      if (!maskAt(mask, x, y)) continue;
-      const nearby = qt.queryCircle(x, y, r + maxCircleSize / 2 + INT_Offset);
-      let clear = true;
-      for (const d of nearby) {
-        const ddx = d.cx - x;
-        const ddy = d.cy - y;
-        const minDist = d.r + r + INT_Offset / 2;
-        if (ddx * ddx + ddy * ddy < minDist * minDist) {
-          clear = false;
-          break;
-        }
+    if (!maskAt(mask, x, y)) continue;
+    const nearby = qt.queryCircle(x, y, r + maxCircleSize / 2 + INT_Offset);
+    let clear = true;
+    for (const d of nearby) {
+      const ddx = d.cx - x;
+      const ddy = d.cy - y;
+      const minDist = d.r + r + INT_Offset / 2;
+      if (ddx * ddx + ddy * ddy < minDist * minDist) {
+        clear = false;
+        break;
       }
-      if (clear) return { cx: x, cy: y };
     }
+    if (clear) return { cx: x, cy: y, nextCursor: c };
   }
   return null;
 }

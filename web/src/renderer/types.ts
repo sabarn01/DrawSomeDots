@@ -26,11 +26,23 @@ export interface LayoutInfo {
   imageHeight: number;
 }
 
+export interface PlacementAttempt {
+  x: number;
+  y: number;
+  ok: boolean;
+}
+
 export interface LetterProgress {
   digitIndex: number;
   drawn: number;
   total: number;
   canvas: HTMLCanvasElement | OffscreenCanvas;
+  /**
+   * A rolling window of recent placement attempts (both successful and
+   * failed). Populated by drawDigit so UIs can visualize where the packing
+   * algorithm is probing.
+   */
+  attempts?: ReadonlyArray<PlacementAttempt>;
 }
 
 export interface ImageProgress {

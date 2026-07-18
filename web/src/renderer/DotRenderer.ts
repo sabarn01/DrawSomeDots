@@ -1,8 +1,9 @@
 import type { RendererOptions, LayoutInfo, LetterProgress } from "./types";
 import { getFillPercentages, distributeDots } from "./distribute";
-import { computeLetterSize, growLetterSize } from "./layout";
+import { computeLetterSize, growLetterSize, layoutFromLetterSize } from "./layout";
 import { renderGlyphMask, drawFittedGlyph } from "./glyphMask";
 import { drawDigit } from "./drawDigit";
+import { getCalibration, letterSizeFromCalibration, recordPackingObservation } from "./calibrate";
 import {
   InterLetterDelayMs,
   MaxCircleSize,
@@ -11,18 +12,39 @@ import {
 
 export class DotRenderer {
   private readonly opts: RendererOptions;
-  private mainCanvas: HTMLCanvasElement | null = null;
+  private readonly _renderCanvas: HTMLCanvasElement;
+  private onFrame?: () => void;
 
   constructor(opts: RendererOptions) {
     this.opts = opts;
+    this._renderCanvas = document.createElement("canvas");
+    this._renderCanvas.width = 1;
+    this._renderCanvas.height = 1;
   }
 
-  get canvas(): HTMLCanvasElement | null {
-    return this.mainCanvas;
+  /**
+   * The full-resolution offscreen canvas the renderer draws into. UIs (e.g.,
+   * View) can read from this at any time; its dimensions match the natural
+   * image size, independent of any display scaling.
+   */
+  get renderCanvas(): HTMLCanvasElement {
+    return this._renderCanvas;
   }
 
-  async run(mainCanvas: HTMLCanvasElement): Promise<void> {
-    this.mainCanvas = mainCanvas;
+  /**
+   * Called after every visible update (outline preview, letter progress,
+   * digit finish). UIs use this to redraw dependent views (main display,
+   * minimap) at their own pace.
+   */
+  setOnFrame(fn: () => void): void {
+    this.onFrame = fn;
+  }
+
+  private emitFrame(): void {
+    this.onFrame?.();
+  }
+
+  async run(): Promise<void> {
     const { number, fontFamily, onImageProgress } = this.opts;
     const digits = String(number);
 
@@ -40,10 +62,21 @@ export class DotRenderer {
     const perDigit = distributeDots(number, fills);
     const minCircleSize = Math.max(1, this.opts.minCircleSize ?? SmallestCircleSize);
     const maxCircleSize = Math.max(minCircleSize, this.opts.maxCircleSize ?? MaxCircleSize);
-    let layout = computeLetterSize(number, fills, minCircleSize, maxCircleSize);
+    // Use measured per-digit packing calibration to compute an accurate
+    // initial letter size. Falls back to the theoretical estimator if
+    // calibration fails for any reason.
+    let layout: LayoutInfo;
+    try {
+      const cal = await getCalibration(fontFamily);
+      const letterSize = letterSizeFromCalibration(number, perDigit, digits, cal);
+      layout = layoutFromLetterSize(letterSize, digits.length);
+    } catch {
+      layout = computeLetterSize(number, fills, minCircleSize, maxCircleSize);
+    }
 
-    this.sizeMainCanvas(layout);
+    this.sizeRenderCanvas(layout);
     this.paintOutlinePreview(digits, fontFamily, layout);
+    this.emitFrame();
     // Yield once so the browser paints the outline preview before we start
     // the (potentially long) first-digit mask + placement work.
     await new Promise<void>((resolve) => {
@@ -51,24 +84,33 @@ export class DotRenderer {
       else setTimeout(resolve, 0);
     });
 
+    // Outer restart loop: if any digit fails to fit its dot allotment at
+    // the current letter size, we grow the letter size and restart the
+    // whole render from digit 0. This keeps every digit rendered exactly
+    // once at the final size (no upscaled tiles, uniform density across
+    // the number), and it also updates the calibration so future runs
+    // skip the grow entirely.
     let totalDrawn = 0;
-    for (let i = 0; i < digits.length; i++) {
-      const ch = digits[i];
-      const alloc = perDigit[i];
+    let placedTiles: HTMLCanvasElement[] = [];
+    let restartsRemaining = 4;
+    outer: while (true) {
+      totalDrawn = 0;
+      placedTiles = [];
+      this.sizeRenderCanvas(layout);
+      this.paintOutlinePreview(digits, fontFamily, layout);
+      this.emitFrame();
 
-      // Grow-and-retry loop for a single digit — the empirical packing
-      // coefficient can underestimate for some fonts/digits; if drawDigit
-      // can't fit all the dots we grow the letter size and try again.
-      let attempt = 0;
-      let result: Awaited<ReturnType<typeof drawDigit>> | null = null;
-      while (attempt < 6) {
+      for (let i = 0; i < digits.length; i++) {
+        const ch = digits[i];
+        const alloc = perDigit[i];
+
         const mask = renderGlyphMask(
           ch,
           fontFamily,
           layout.letterSize,
           layout.letterWidth,
         );
-        result = await drawDigit({
+        const result = await drawDigit({
           digit: ch,
           fontFamily,
           letterSize: layout.letterSize,
@@ -81,65 +123,89 @@ export class DotRenderer {
           onProgress: this.forwardLetterProgress(i, alloc),
           yieldFn: yieldToBrowser,
         });
-        if (result.unplaced === 0) break;
-        // Grow and retry this digit.
-        layout = growLetterSize(layout, digits.length);
-        this.sizeMainCanvas(layout);
-        // Repaint already-composed digits at new size — for simplicity we
-        // just re-run everything from digit 0 on the next iteration would
-        // be complex; instead we accept that a grow event resets this digit
-        // only. Prior digits keep their old tile; we recompose at new width.
-        // In practice grow-and-retry fires rarely and mostly on the first
-        // digit, so the visual impact is negligible.
-        attempt++;
+
+        if (result.unplaced > 0) {
+          // Feed the observed ceiling back into calibration so future
+          // runs of this font pick a larger letter size for this digit
+          // and skip the restart entirely.
+          recordPackingObservation(
+            fontFamily,
+            Number(ch),
+            layout.letterSize,
+            layout.letterWidth,
+            result.placed,
+            false,
+          );
+          const grown = growLetterSize(layout, digits.length);
+          // If growLetterSize couldn't actually grow (clamped at
+          // MaxLetterSize), further restarts would do identical work.
+          // Commit what we have and continue with the next digits at
+          // the same capped size — they may still succeed on their own
+          // if their allotment is smaller.
+          if (grown.letterSize <= layout.letterSize || restartsRemaining <= 0) {
+            const ctx = this._renderCanvas.getContext("2d")!;
+            ctx.drawImage(result.canvas, layout.letterWidth * i, 0);
+            placedTiles.push(result.canvas);
+            totalDrawn += result.placed;
+            this.emitFrame();
+            onImageProgress?.({
+              totalDrawn,
+              totalTarget: number,
+              canvas: this._renderCanvas,
+            });
+            if (i < digits.length - 1) {
+              await sleep(this.opts.interLetterDelayMs ?? InterLetterDelayMs);
+            }
+            continue; // move on to next digit; do NOT restart
+          }
+          restartsRemaining--;
+          layout = grown;
+          continue outer;
+        }
+
+        // Compose the finished digit onto the full-res render canvas.
+        const ctx = this._renderCanvas.getContext("2d")!;
+        ctx.drawImage(result.canvas, layout.letterWidth * i, 0);
+        placedTiles.push(result.canvas);
+        totalDrawn += result.placed;
+        this.emitFrame();
+        onImageProgress?.({
+          totalDrawn,
+          totalTarget: number,
+          canvas: this._renderCanvas,
+        });
+
+        if (i < digits.length - 1) {
+          await sleep(this.opts.interLetterDelayMs ?? InterLetterDelayMs);
+        }
       }
-
-      if (!result) throw new Error("drawDigit never ran");
-
-      // Compose the digit's canvas onto the main canvas.
-      const ctx = mainCanvas.getContext("2d")!;
-      ctx.drawImage(result.canvas, layout.letterWidth * i, 0);
-
-      totalDrawn += result.placed;
-      onImageProgress?.({
-        totalDrawn,
-        totalTarget: number,
-        canvas: mainCanvas,
-      });
-
-      if (i < digits.length - 1) {
-        await sleep(this.opts.interLetterDelayMs ?? InterLetterDelayMs);
-      }
+      break; // all digits rendered successfully at the current size
     }
   }
 
-  private sizeMainCanvas(layout: LayoutInfo): void {
-    if (!this.mainCanvas) return;
+  private sizeRenderCanvas(layout: LayoutInfo): void {
     if (
-      this.mainCanvas.width !== layout.imageWidth ||
-      this.mainCanvas.height !== layout.imageHeight
+      this._renderCanvas.width !== layout.imageWidth ||
+      this._renderCanvas.height !== layout.imageHeight
     ) {
-      this.mainCanvas.width = layout.imageWidth;
-      this.mainCanvas.height = layout.imageHeight;
-      const ctx = this.mainCanvas.getContext("2d")!;
+      this._renderCanvas.width = layout.imageWidth;
+      this._renderCanvas.height = layout.imageHeight;
+      const ctx = this._renderCanvas.getContext("2d")!;
       ctx.fillStyle = "white";
-      ctx.fillRect(0, 0, this.mainCanvas.width, this.mainCanvas.height);
+      ctx.fillRect(0, 0, this._renderCanvas.width, this._renderCanvas.height);
     }
   }
 
   /**
-   * Paint faint outlines of every digit onto the main canvas so the number's
-   * shape is visible immediately, before any dots land. Without this, big-N
-   * renders leave the canvas blank for the first several hundred ms while
-   * masks and fill percentages are computed.
+   * Paint faint outlines of every digit onto the render canvas so the
+   * number's shape is visible immediately, before any dots land.
    */
   private paintOutlinePreview(
     digits: string,
     fontFamily: string,
     layout: LayoutInfo,
   ): void {
-    if (!this.mainCanvas) return;
-    const ctx = this.mainCanvas.getContext("2d")!;
+    const ctx = this._renderCanvas.getContext("2d")!;
     for (let i = 0; i < digits.length; i++) {
       ctx.save();
       ctx.translate(layout.letterWidth * i, 0);
@@ -149,7 +215,7 @@ export class DotRenderer {
         fontFamily,
         layout.letterWidth,
         layout.letterSize,
-        "rgba(0,0,0,0.08)",
+        "white",
       );
       ctx.restore();
     }
@@ -160,14 +226,14 @@ export class DotRenderer {
     total: number,
   ): (p: LetterProgress) => void {
     return (p) => {
-      if (!this.mainCanvas) return;
-      // Live-preview each digit tile onto the main canvas as it fills in.
-      const ctx = this.mainCanvas.getContext("2d")!;
-      // Compute a fixed letterWidth from current canvas / digit count.
-      const digitCount = String(this.opts.number).length;
-      const letterWidth = Math.floor(this.mainCanvas.width / digitCount);
-      ctx.drawImage(p.canvas, letterWidth * digitIndex, 0);
-      this.opts.onLetterProgress?.({ ...p, total });
+      // Per-dot live rendering goes to the caller (main.ts uses this to paint
+      // a small dedicated "current digit" canvas). We deliberately do NOT
+      // blit the in-progress tile back onto the full render canvas here —
+      // for large N that tile can be tens of megapixels, and blitting it +
+      // repainting the display 60x/second stalls progressive rendering.
+      // The tile is composed onto the render canvas once, when the digit
+      // completes (see run()).
+      this.opts.onLetterProgress?.({ ...p, total, digitIndex });
     };
   }
 }
@@ -177,9 +243,6 @@ function sleep(ms: number): Promise<void> {
 }
 
 function yieldToBrowser(): Promise<void> {
-  // requestAnimationFrame gives the browser a real paint opportunity and
-  // avoids setTimeout's 4ms clamping in modern browsers. Fall back to
-  // setTimeout if rAF isn't available (e.g., in a worker).
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === "function") {
       requestAnimationFrame(() => resolve());
