@@ -4,5 +4,8 @@
 NDependOut/
 web/node_modules/
 web/dist/
+web/calibrate.log
+web/test-results/
+web/playwright-report/
 .env
 .env.*.local

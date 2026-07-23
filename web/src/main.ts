@@ -25,7 +25,8 @@ const pbLetter = $<HTMLProgressElement>("pb-letter");
 const pbLetterTxt = $<HTMLSpanElement>("pb-letter-txt");
 const pbTotal = $<HTMLProgressElement>("pb-total");
 const pbTotalTxt = $<HTMLSpanElement>("pb-total-txt");
-const elapsedEl = $<HTMLDivElement>("elapsed");
+const elapsedEl = $<HTMLSpanElement>("elapsed");
+const resizeFlashEl = $<HTMLDivElement>("resize-flash");
 
 // --- View / minimap wiring --------------------------------------------------
 
@@ -153,7 +154,7 @@ goBtn.addEventListener("click", async () => {
 
   const start = performance.now();
   const elapsedTimer: number = window.setInterval(() => {
-    elapsedEl.textContent = `Elapsed: ${((performance.now() - start) / 1000).toFixed(2)}s`;
+    elapsedEl.textContent = `${((performance.now() - start) / 1000).toFixed(2)}s`;
   }, 100);
 
   try {
@@ -175,6 +176,25 @@ goBtn.addEventListener("click", async () => {
         pbTotal.value = p.totalDrawn;
         pbTotalTxt.textContent = `${p.totalDrawn} / ${p.totalTarget}`;
       },
+      onResize: (e) => {
+        // Momentary "Resizing" toast so the user sees why the render just
+        // restarted at a bigger letter size (rather than thinking it froze).
+        resizeFlashEl.textContent = `Resizing → ${e.letterSize}px (digit ${e.digitIndex + 1})`;
+        // Restart the CSS animation by toggling the class off and back on.
+        resizeFlashEl.classList.remove("flashing");
+        // Force reflow so the animation replays even if it was already
+        // running from a previous resize a moment ago.
+        void resizeFlashEl.offsetWidth;
+        resizeFlashEl.classList.add("flashing");
+        // The renderer restarts from digit 0 — reset both progress bars
+        // so the stale "digit N / M" and total-drawn numbers don't linger
+        // on screen while the fresh mask-rendering for digit 0 runs.
+        pbLetter.value = 0;
+        pbLetter.max = 1;
+        pbLetterTxt.textContent = "0 / 0";
+        pbTotal.value = 0;
+        pbTotalTxt.textContent = `0 / ${pbTotal.max}`;
+      },
     });
     currentSource = renderer.renderCanvas;
     view.setSource(currentSource);
@@ -189,7 +209,7 @@ goBtn.addEventListener("click", async () => {
     alert(`Render failed: ${(e as Error).message}`);
   } finally {
     window.clearInterval(elapsedTimer);
-    elapsedEl.textContent = `Elapsed: ${((performance.now() - start) / 1000).toFixed(2)}s`;
+    elapsedEl.textContent = `${((performance.now() - start) / 1000).toFixed(2)}s`;
     setControlsDisabled(false);
     running = false;
     view.redraw();
@@ -262,5 +282,78 @@ function resetProgress(n: number): void {
   pbTotal.value = 0;
   pbTotal.max = n;
   pbTotalTxt.textContent = `0 / ${n}`;
-  elapsedEl.textContent = "Elapsed: 0.00s";
+  elapsedEl.textContent = "0.00s";
 }
+
+// --- Initial number + auto-start ------------------------------------------
+// Number source order: URL `?n=` (or `?number=`) param → random in
+// [10_000, 100_000). Font source: URL `?font=` param (case-insensitive
+// match against the dropdown options) → default. In both cases the 5-second
+// countdown + pulse animation runs so the user can still cancel or edit
+// before the render starts.
+(() => {
+  const params = new URLSearchParams(window.location.search);
+  const paramN = params.get("n") ?? params.get("number");
+  const parsed = paramN != null ? Number.parseInt(paramN, 10) : NaN;
+  const initial = Number.isFinite(parsed) && parsed >= 1
+    ? parsed
+    : 10_000 + Math.floor(Math.random() * 90_000);
+  numInput.value = String(initial);
+
+  const paramFont = params.get("font");
+  if (paramFont) {
+    const match = Array.from(fontSelect.options).find(
+      (o) => o.value.toLowerCase() === paramFont.toLowerCase(),
+    );
+    if (match) fontSelect.value = match.value;
+  }
+
+  const autostartBadge = document.getElementById("autostart") as HTMLSpanElement;
+  const autostartSecs = document.getElementById("autostart-secs") as HTMLSpanElement;
+  const pulseTargets = [numInput, goBtn];
+  pulseTargets.forEach((el) => el.classList.add("pulse"));
+  autostartBadge.hidden = false;
+
+  const AutoStartMs = 5000;
+  const start = performance.now();
+  let cancelled = false;
+
+  const cancel = (): void => {
+    if (cancelled) return;
+    cancelled = true;
+    pulseTargets.forEach((el) => el.classList.remove("pulse"));
+    autostartBadge.hidden = true;
+    window.clearInterval(tickTimer);
+    window.clearTimeout(fireTimer);
+    // Remove listeners so post-render interactions don't retrigger anything.
+    cancelListeners.forEach((fn) => fn());
+  };
+
+  const tickTimer = window.setInterval(() => {
+    const remaining = Math.max(0, AutoStartMs - (performance.now() - start));
+    autostartSecs.textContent = Math.ceil(remaining / 1000).toString();
+  }, 100);
+
+  const fireTimer = window.setTimeout(() => {
+    if (cancelled) return;
+    cancel();
+    goBtn.click();
+  }, AutoStartMs);
+
+  // Only explicit "start/stop" actions cancel the auto-start. Editing the
+  // number or changing the font is fine — the auto-start will fire with
+  // whatever value is in the field when the timer expires. That way a
+  // user who wants to pick a different number can just type it and let
+  // the countdown finish, without having to also click Go.
+  const cancelEvents: Array<[EventTarget, string]> = [
+    [goBtn, "click"],
+    [saveBtn, "click"],
+    [resetViewBtn, "click"],
+  ];
+  const cancelListeners: Array<() => void> = cancelEvents.map(([target, ev]) => {
+    const handler = (): void => cancel();
+    target.addEventListener(ev, handler, { once: true });
+    return () => target.removeEventListener(ev, handler);
+  });
+})();
+

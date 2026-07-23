@@ -5,78 +5,247 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Draw Some Dots</title>
     <style>
+      :root {
+        --bg: #f6f7fb;
+        --surface: #ffffff;
+        --surface-muted: #f0f2f7;
+        --text: #1a1d24;
+        --muted: #6b7280;
+        --border: #e4e6ec;
+        --border-strong: #cfd3dc;
+        --accent: #4f46e5;
+        --accent-hover: #4338ca;
+        --accent-fg: #ffffff;
+        --success: #10b981;
+        --radius-sm: 6px;
+        --radius: 10px;
+        --radius-lg: 14px;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+        --shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+        --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.14);
+        --appbar-h: 56px;
+        --status-h: 44px;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; }
+
+      html, body { height: 100%; }
       body {
-        font-family: system-ui, sans-serif;
         margin: 0;
-        padding: 16px;
-        background: #f4f4f4;
-        color: #222;
-      }
-      h1 {
-        font-size: 20px;
-        margin: 0 0 12px 0;
-      }
-      .controls {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        font-size: 14px;
+        color: var(--text);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
+        flex-direction: column;
+      }
+
+      /* ---------- App bar ---------- */
+      .app-bar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
         align-items: center;
-        margin-bottom: 12px;
+        gap: 20px;
+        padding: 0 20px;
+        height: var(--appbar-h);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        box-shadow: var(--shadow-sm);
       }
-      .controls label {
-        font-size: 13px;
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        font-size: 16px;
+        letter-spacing: -0.01em;
       }
-      .controls input[type="number"] {
-        width: 120px;
-        padding: 4px;
-        font-size: 14px;
+      .brand-dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: conic-gradient(#ef4444, #f59e0b, #10b981, #3b82f6, #a855f7, #ef4444);
+        box-shadow: var(--shadow-sm);
       }
-      .controls select,
-      .controls button {
-        padding: 4px 10px;
-        font-size: 14px;
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-left: auto;
+        flex-wrap: wrap;
       }
-      .controls label.range {
+      .field {
         display: inline-flex;
         align-items: center;
         gap: 6px;
         font-size: 13px;
+        color: var(--muted);
       }
-      .controls label.range input[type="range"] {
-        width: 120px;
+      .field-label { font-weight: 500; }
+
+      /* Number input — hero control */
+      input[type="number"] {
+        appearance: none;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: var(--text);
+        padding: 6px 10px;
+        border-radius: var(--radius-sm);
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+        font-size: 15px;
+        font-weight: 500;
+        width: 140px;
+        transition: border-color 120ms, box-shadow 120ms;
       }
-      button:disabled,
-      input:disabled,
-      select:disabled {
-        opacity: 0.55;
-        cursor: not-allowed;
+      input[type="number"]:hover { border-color: var(--muted); }
+      input[type="number"]:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
       }
-      .progress-row {
+
+      /* Select — custom chevron */
+      select {
+        appearance: none;
+        border: 1px solid var(--border-strong);
+        background:
+          url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 4.5L6 7.5L9 4.5' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/></svg>")
+          no-repeat right 8px center var(--surface);
+        color: var(--text);
+        padding: 6px 26px 6px 10px;
+        border-radius: var(--radius-sm);
+        font: inherit;
+        cursor: pointer;
+        transition: border-color 120ms, box-shadow 120ms;
+      }
+      select:hover { border-color: var(--muted); }
+      select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+      }
+
+      /* Checkbox */
+      .checkbox {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .checkbox input[type="checkbox"] {
+        width: 15px;
+        height: 15px;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+
+      /* Buttons */
+      button {
+        appearance: none;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: var(--text);
+        padding: 6px 14px;
+        border-radius: 999px;
+        font: inherit;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 120ms, border-color 120ms, box-shadow 120ms, transform 60ms;
+      }
+      button:hover:not(:disabled) {
+        background: var(--surface-muted);
+        border-color: var(--muted);
+      }
+      button:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.28);
+      }
+      button:active:not(:disabled) { transform: translateY(1px); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      button.primary {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-color: var(--accent);
+      }
+      button.primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+      }
+
+      /* ---------- Status strip ---------- */
+      .status-strip {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 20px;
+        height: var(--status-h);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+      }
+      .status-item {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin-bottom: 6px;
-        font-size: 13px;
+        min-width: 0;
       }
-      .progress-row label {
-        width: 80px;
+      .status-item.stretch { flex: 1; }
+      .status-item .label {
+        color: var(--muted);
+        font-weight: 500;
+        white-space: nowrap;
       }
-      progress {
-        flex: 1;
-        height: 14px;
-      }
-      #elapsed {
+      .status-item .value {
         font-variant-numeric: tabular-nums;
-        font-size: 13px;
-        margin-bottom: 12px;
+        color: var(--text);
+        white-space: nowrap;
+      }
+
+      /* Custom progress bar (WebKit + Firefox) */
+      progress {
+        appearance: none;
+        border: none;
+        width: 100%;
+        min-width: 80px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--surface-muted);
+        overflow: hidden;
+      }
+      progress::-webkit-progress-bar {
+        background: var(--surface-muted);
+        border-radius: 999px;
+      }
+      progress::-webkit-progress-value {
+        background: linear-gradient(90deg, var(--accent), #7c6ff0);
+        border-radius: 999px;
+        transition: width 120ms linear;
+      }
+      progress::-moz-progress-bar {
+        background: var(--accent);
+        border-radius: 999px;
+      }
+
+      /* ---------- Canvas area ---------- */
+      main {
+        flex: 1;
+        min-height: 0;
+        padding: 16px 20px 20px 20px;
       }
       #canvas-wrap {
         position: relative;
-        background: white;
-        border: 1px solid #ccc;
-        padding: 0;
-        max-width: 100%;
-        height: calc(100vh - 220px);
+        width: 100%;
+        height: 100%;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-sm);
         overflow: hidden;
       }
       #main {
@@ -86,111 +255,219 @@
         outline: none;
         cursor: grab;
         touch-action: none;
+        border-radius: var(--radius);
       }
-      #main:active {
-        cursor: grabbing;
+      #main:active { cursor: grabbing; }
+      #main:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
       }
+
+      /* ---------- Floating overlays ---------- */
+      .overlay {
+        background: rgba(255, 255, 255, 0.82);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(207, 211, 220, 0.7);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
       #minimap {
         position: absolute;
-        right: 8px;
-        bottom: 8px;
+        right: 12px;
+        bottom: 12px;
         width: 160px;
         height: 100px;
-        border: 1px solid #888;
-        background: rgba(255, 255, 255, 0.85);
         cursor: crosshair;
         touch-action: none;
         display: none;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow);
       }
-      #minimap.visible {
-        display: block;
-      }
+      #minimap.visible { display: block; }
+
       #hint {
         position: absolute;
-        left: 8px;
-        top: 8px;
+        left: 12px;
+        bottom: 12px;
         font-size: 11px;
-        color: #666;
-        background: rgba(255, 255, 255, 0.85);
-        padding: 2px 6px;
-        border-radius: 3px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.82);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        padding: 6px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(207, 211, 220, 0.7);
         pointer-events: none;
       }
-      .preview-label {
-        font-size: 11px;
-        color: #666;
-        background: rgba(255, 255, 255, 0.85);
-        padding: 1px 6px;
-        border-radius: 2px 2px 0 0;
-        cursor: move;
-        user-select: none;
-      }
+
       #preview-wrap {
         position: absolute;
-        left: 8px;
-        top: 32px;
+        left: 12px;
+        top: 12px;
         display: flex;
         flex-direction: column;
-        align-items: stretch;
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.82);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(207, 211, 220, 0.7);
+        box-shadow: var(--shadow);
       }
-      #preview-wrap.dragging .preview-label {
-        cursor: grabbing;
+      #preview-wrap.dragging .preview-label { cursor: grabbing; }
+      .preview-label {
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--muted);
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border);
+        cursor: move;
+        user-select: none;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
       }
       #preview {
         width: 160px;
         height: 220px;
-        background: white;
-        border: 1px solid #888;
         display: block;
+        background: white;
+      }
+
+      /* ---------- Resize flash toast ---------- */
+      @keyframes dsd-flash {
+        0%   { opacity: 0; transform: translate(-50%, -8px) scale(0.95); }
+        15%  { opacity: 1; transform: translate(-50%, 0) scale(1); }
+        70%  { opacity: 1; transform: translate(-50%, 0) scale(1); }
+        100% { opacity: 0; transform: translate(-50%, -8px) scale(0.98); }
+      }
+      #resize-flash {
+        position: absolute;
+        top: 16px;
+        left: 50%;
+        transform: translate(-50%, -8px);
+        padding: 8px 16px;
+        border-radius: 999px;
+        background: rgba(79, 70, 229, 0.95);
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        box-shadow: var(--shadow-lg);
+        pointer-events: none;
+        opacity: 0;
+        z-index: 20;
+      }
+      #resize-flash.flashing {
+        animation: dsd-flash 1400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      /* ---------- Auto-start attention pulse ---------- */
+      @keyframes dsd-pulse {
+        0%, 100% {
+          box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.5);
+          border-color: var(--accent);
+        }
+        50% {
+          box-shadow: 0 0 0 8px rgba(79, 70, 229, 0);
+          border-color: var(--accent-hover);
+        }
+      }
+      .pulse {
+        animation: dsd-pulse 1.4s ease-out infinite;
+      }
+      .autostart-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(79, 70, 229, 0.08);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 500;
+        border: 1px solid rgba(79, 70, 229, 0.3);
+        font-variant-numeric: tabular-nums;
+      }
+      .autostart-badge[hidden] { display: none; }
+
+      /* ---------- Motion + a11y ---------- */
+      @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; animation: none !important; }
+      }
+
+      @media (max-width: 640px) {
+        .app-bar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; }
+        .actions { gap: 6px; }
+        .status-strip { padding: 8px 12px; gap: 10px; }
+        main { padding: 10px; }
       }
     </style>
   </head>
   <body>
-    <h1>Draw Some Dots</h1>
-    <div class="controls">
-      <label>
-        Number:
-        <input id="num" type="number" min="1" value="42" />
-      </label>
-      <label>
-        Font:
-        <select id="font">
-          <option>Comic Sans MS</option>
-          <option>Arial</option>
-          <option>Georgia</option>
-          <option>Courier New</option>
-          <option>Impact</option>
-          <option>Verdana</option>
-        </select>
-      </label>
-      <label title="Show rejected placement attempts on the current-digit preview">
-        <input id="show-misses" type="checkbox" checked />
-        Show misses
-      </label>
-      <button id="go">Go</button>
-      <button id="save" disabled>Save PNG</button>
-      <button id="reset-view" title="Reset zoom &amp; pan (or double-click canvas / press 0)">Reset view</button>
-    </div>
-    <div class="progress-row">
-      <label>Letter:</label>
-      <progress id="pb-letter" value="0" max="1"></progress>
-      <span id="pb-letter-txt">0 / 0</span>
-    </div>
-    <div class="progress-row">
-      <label>Total:</label>
-      <progress id="pb-total" value="0" max="1"></progress>
-      <span id="pb-total-txt">0 / 0</span>
-    </div>
-    <div id="elapsed">Elapsed: 0.00s</div>
-    <div id="canvas-wrap">
-      <canvas id="main" tabindex="0"></canvas>
-      <canvas id="minimap"></canvas>
-      <div id="hint">Wheel: zoom · Drag: pan · Dbl-click / 0: reset · Arrows: pan</div>
-      <div id="preview-wrap" title="Live preview of the digit currently being filled">
-        <div class="preview-label">Current digit</div>
-        <canvas id="preview" width="160" height="220"></canvas>
+    <header class="app-bar">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        Draw Some Dots
+      </div>
+      <div class="actions">
+        <label class="field">
+          <span class="field-label">Number</span>
+          <input id="num" type="number" min="1" value="42" />
+        </label>
+        <label class="field">
+          <span class="field-label">Font</span>
+          <select id="font">
+            <option>Comic Sans MS</option>
+            <option>Arial</option>
+            <option>Georgia</option>
+            <option>Courier New</option>
+            <option>Impact</option>
+            <option>Verdana</option>
+          </select>
+        </label>
+        <label class="checkbox" title="Show rejected placement attempts on the current-digit preview">
+          <input id="show-misses" type="checkbox" checked />
+          Show misses
+        </label>
+        <span id="autostart" class="autostart-badge" hidden>Auto-starting in <span id="autostart-secs">5</span>s</span>
+        <button id="go" class="primary">Go</button>
+        <button id="save" disabled>Save PNG</button>
+        <button id="reset-view" title="Reset zoom &amp; pan (or double-click canvas / press 0)">Reset view</button>
+      </div>
+    </header>
+    <div class="status-strip">
+      <div class="status-item stretch">
+        <span class="label">Letter</span>
+        <progress id="pb-letter" value="0" max="1"></progress>
+        <span class="value" id="pb-letter-txt">0 / 0</span>
+      </div>
+      <div class="status-item stretch">
+        <span class="label">Total</span>
+        <progress id="pb-total" value="0" max="1"></progress>
+        <span class="value" id="pb-total-txt">0 / 0</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Elapsed</span>
+        <span class="value" id="elapsed">0.00s</span>
       </div>
     </div>
+    <main>
+      <div id="canvas-wrap">
+        <canvas id="main" tabindex="0"></canvas>
+        <canvas id="minimap"></canvas>
+        <div id="resize-flash"></div>
+        <div id="hint">Wheel: zoom · Drag: pan · Dbl-click / 0: reset · Arrows: pan</div>
+        <div id="preview-wrap" title="Live preview of the digit currently being filled">
+          <div class="preview-label">Current digit</div>
+          <canvas id="preview" width="160" height="220"></canvas>
+        </div>
+      </div>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

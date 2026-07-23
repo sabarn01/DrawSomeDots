@@ -1,5 +1,6 @@
 import { renderGlyphMask, maskAt, darkPixelCount } from "./glyphMask";
 import { INT_Offset, WidthToHeightFactor, MaxLetterSize, SmallestCircleSize, MaxCircleSize } from "./constants";
+import { findBakedCalibration } from "./calibrationData";
 
 /**
  * Per-digit packing calibration for a font. For each digit 0-9 we measure
@@ -16,16 +17,36 @@ import { INT_Offset, WidthToHeightFactor, MaxLetterSize, SmallestCircleSize, Max
  */
 
 export interface PackingCalibration {
-  /** dotsPerPixel[d] = dot count / letter-area for digit d. */
+  /**
+   * dotsPerPixel[d] = dot count / letter-area for digit d, aggregated
+   * across several sample letter sizes so single-size AA/hinting
+   * artefacts don't skew the value. Drives BOTH the letter-size math
+   * (letterSizeFromCalibration) AND the per-digit dot allocation
+   * (distributeDots takes it as the weights array). This is the right
+   * quantity for both, because we want each digit sized to hold its
+   * share of N dots, and the "share" is proportional to how many dots
+   * a digit can actually pack — not to how many ink pixels it has
+   * (a "1" has lots of ink for its width but poor packing; an "8"
+   * packs efficiently in its bowls).
+   */
   dotsPerPixel: number[];
+  /**
+   * dotsPerPixel measured at each sample size individually, for
+   * diagnostics/regression. `perSize[d][i]` is the digit's density at
+   * `sampleSizes[i]`. Not consumed at runtime today; kept in the cache
+   * so we can tweak the aggregation formula without re-measuring.
+   */
+  perSize: number[][];
+  /** Sample letter sizes used for this measurement, ordered small → large. */
+  sampleSizes: number[];
   /** Ms wall-clock spent measuring. Kept for logging/debug. */
   measuredMs: number;
   /** Version tag; bump if the measurement algorithm changes so old cached values get discarded. */
   version: number;
 }
 
-const CALIBRATION_VERSION = 2;
-const STORAGE_PREFIX = "dsd:calib:v2:";
+const CALIBRATION_VERSION = 4;
+const STORAGE_PREFIX = "dsd:calib:v4:";
 
 const memCache = new Map<string, PackingCalibration>();
 
@@ -46,6 +67,25 @@ export function clearCalibrationCache(): void {
 export async function getCalibration(fontFamily: string): Promise<PackingCalibration> {
   const cached = memCache.get(fontFamily);
   if (cached) return cached;
+  // Prefer the Playwright-baked data checked in at `calibrationData.ts`:
+  // it was measured against the real drawDigit algorithm at multiple
+  // sizes so its dotsPerPixel numbers reflect actual runtime packing.
+  // Only falls through to on-the-fly measurement for fonts that
+  // weren't baked (e.g., a system font the user typed in themselves).
+  const baked = findBakedCalibration(fontFamily);
+  if (baked) {
+    const sampleSizes = baked.perSize[0]?.map((s) => s.size) ?? [];
+    const perSize = baked.perSize.map((arr) => arr.map((s) => s.dotsPerPixel));
+    const cal: PackingCalibration = {
+      dotsPerPixel: [...baked.dotsPerPixel],
+      perSize,
+      sampleSizes,
+      measuredMs: 0,
+      version: CALIBRATION_VERSION,
+    };
+    memCache.set(fontFamily, cal);
+    return cal;
+  }
   const stored = loadStored(fontFamily);
   if (stored) {
     memCache.set(fontFamily, stored);
@@ -65,6 +105,8 @@ function loadStored(fontFamily: string): PackingCalibration | null {
     const parsed = JSON.parse(raw) as PackingCalibration;
     if (parsed.version !== CALIBRATION_VERSION) return null;
     if (!Array.isArray(parsed.dotsPerPixel) || parsed.dotsPerPixel.length !== 10) return null;
+    if (!Array.isArray(parsed.perSize) || parsed.perSize.length !== 10) return null;
+    if (!Array.isArray(parsed.sampleSizes) || parsed.sampleSizes.length === 0) return null;
     return parsed;
   } catch {
     return null;
@@ -182,30 +224,76 @@ export function letterSizeFromCalibration(
   return Math.max(120, Math.min(MaxLetterSize, s));
 }
 
-async function measureFont(fontFamily: string): Promise<PackingCalibration> {
-  const t0 = performance.now();
-  // Measure at two sizes: small (fast, captures worst-case boundary effects)
-  // and medium (more accurate for large glyphs). If they disagree
-  // significantly, prefer the medium reading — thin-stroke digits like "1"
-  // often pack much better once the stroke is wide enough to fit two dots.
-  const sizeSmall = 220;
-  const sizeLarge = 500;
+/**
+ * Letter sizes at which each digit's packing density is sampled. Sampling
+ * at multiple sizes captures the fact that packing isn't linear in area:
+ * a thin-stroke digit like "1" packs poorly at small sizes (stroke isn't
+ * wide enough for two dots side-by-side) but well once it's large. We
+ * aggregate the samples with a bias toward the larger sizes because the
+ * runtime letter size for large N is typically several hundred pixels,
+ * so those samples are the most representative. Ordered small → large.
+ * Configurable per font in `FontPackingSampleSizes` below; 4–6 sizes is
+ * a good balance of accuracy vs first-run measurement time.
+ */
+export const DefaultPackingSampleSizes = [180, 300, 460, 640] as const;
 
-  const dotsPerPixel: number[] = new Array(10).fill(0);
+/**
+ * Per-font overrides for the packing sample sizes. Use this when a
+ * particular font has unusual metrics (heavy hinting, condensed glyphs)
+ * that call for a different sampling range. Keys are matched
+ * case-insensitively against `fontFamily`. Fonts not listed here fall
+ * back to `DefaultPackingSampleSizes`.
+ */
+export const FontPackingSampleSizes: Record<string, readonly number[]> = {
+  // "Impact":        [160, 280, 440, 620, 820],
+  // "Comic Sans MS": [180, 320, 500, 700],
+};
+
+function packingSamplesFor(fontFamily: string): readonly number[] {
+  for (const key of Object.keys(FontPackingSampleSizes)) {
+    if (key.toLowerCase() === fontFamily.toLowerCase()) return FontPackingSampleSizes[key];
+  }
+  return DefaultPackingSampleSizes;
+}
+
+async function measureFont(
+  fontFamily: string,
+  sampleSizes: readonly number[] = packingSamplesFor(fontFamily),
+): Promise<PackingCalibration> {
+  const t0 = performance.now();
+  const sizes = [...sampleSizes].sort((a, b) => a - b);
+
+  // perSize[d][i] = dotsPerPixel for digit d at sizes[i]
+  const perSize: number[][] = Array.from({ length: 10 }, () => new Array(sizes.length).fill(0));
+
   for (let d = 0; d <= 9; d++) {
-    const small = measureDigit(String(d), fontFamily, sizeSmall);
-    const large = measureDigit(String(d), fontFamily, sizeLarge);
-    // Weighted average leaning toward the large reading, but never below
-    // the small one (worst-case for a smallish letter is still small).
-    const dpp =
-      large > small * 1.15 ? large * 0.85 + small * 0.15 : (small + large) / 2;
-    dotsPerPixel[d] = Math.max(dpp, 1e-6);
-    // Yield periodically so calibration doesn't block the UI thread.
-    if (d % 3 === 2) await yieldOnce();
+    for (let i = 0; i < sizes.length; i++) {
+      perSize[d][i] = measureDigit(String(d), fontFamily, sizes[i]);
+    }
+    if (d % 2 === 1) await yieldOnce();
+  }
+
+  // Aggregate each digit's samples into a single dotsPerPixel. We weight
+  // toward the larger sizes because packing density asymptotes as the
+  // stroke gets wide enough to hold multiple dots across, and runtime
+  // letter sizes for realistic N are hundreds of pixels — much closer
+  // to our large samples than our small ones. Linear weights over the
+  // sorted samples (small → large) give the largest sample the highest
+  // weight without discarding the smaller samples entirely (they still
+  // help stabilize noisy jitter placements).
+  const dotsPerPixel: number[] = new Array(10).fill(0);
+  let weightSum = 0;
+  for (let i = 0; i < sizes.length; i++) weightSum += i + 1;
+  for (let d = 0; d <= 9; d++) {
+    let acc = 0;
+    for (let i = 0; i < sizes.length; i++) acc += perSize[d][i] * (i + 1);
+    dotsPerPixel[d] = Math.max(acc / weightSum, 1e-6);
   }
 
   return {
     dotsPerPixel,
+    perSize,
+    sampleSizes: [...sizes],
     measuredMs: performance.now() - t0,
     version: CALIBRATION_VERSION,
   };
@@ -239,7 +327,13 @@ function measureDigit(
 
   const letterArea = letterSize * letterWidth;
   const avgDiameter = (SmallestCircleSize + MaxCircleSize) / 2;
-  const step = Math.max(2, Math.floor(avgDiameter * 0.9));
+  // Smaller step + more jitter attempts than the C# heuristic. Diagonals
+  // and thin strokes (7, 1, 4) have narrow valid bands that a coarse
+  // grid overshoots — a finer grid with more attempts per cell brings
+  // measured capacity in line with what the runtime random-probe
+  // placement actually achieves.
+  const step = Math.max(2, Math.floor(avgDiameter * 0.7));
+  const jitterAttempts = 8;
   const r = avgDiameter / 2 + 0.5;
 
   // Neighbor grid keyed by cell of size `cellSize`.
@@ -295,7 +389,7 @@ function measureDigit(
   // correlates well with what drawDigit ends up placing.
   for (let gy = bounds.y; gy < bounds.y + bounds.height; gy += step) {
     for (let gx = bounds.x; gx < bounds.x + bounds.width; gx += step) {
-      for (let jitter = 0; jitter < 3; jitter++) {
+      for (let jitter = 0; jitter < jitterAttempts; jitter++) {
         const cx = gx + Math.floor(Math.random() * step);
         const cy = gy + Math.floor(Math.random() * step);
         if (!insideGlyph(cx, cy)) continue;

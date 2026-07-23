@@ -45,7 +45,7 @@ export class DotRenderer {
   }
 
   async run(): Promise<void> {
-    const { number, fontFamily, onImageProgress } = this.opts;
+    const { number, fontFamily, onImageProgress, onResize } = this.opts;
     const digits = String(number);
 
     // Wait for the selected font to be ready so metrics/masks are stable.
@@ -59,18 +59,24 @@ export class DotRenderer {
     }
 
     const fills = getFillPercentages(fontFamily);
-    const perDigit = distributeDots(number, fills);
     const minCircleSize = Math.max(1, this.opts.minCircleSize ?? SmallestCircleSize);
     const maxCircleSize = Math.max(minCircleSize, this.opts.maxCircleSize ?? MaxCircleSize);
-    // Use measured per-digit packing calibration to compute an accurate
-    // initial letter size. Falls back to the theoretical estimator if
-    // calibration fails for any reason.
+    // Prefer the multi-size packing-capacity measurement from
+    // calibration so digits get a share of N proportional to how many
+    // dots they can actually hold — not to how many ink pixels they
+    // have. Ink pixels are a poor proxy: a "1" has lots of ink for its
+    // width but poor packing (thin stroke), while an "8" packs
+    // efficiently in its bowls. Falls back to the single-size ink
+    // fraction if calibration is unavailable.
+    let perDigit: number[];
     let layout: LayoutInfo;
     try {
       const cal = await getCalibration(fontFamily);
+      perDigit = distributeDots(number, cal.dotsPerPixel);
       const letterSize = letterSizeFromCalibration(number, perDigit, digits, cal);
       layout = layoutFromLetterSize(letterSize, digits.length);
     } catch {
+      perDigit = distributeDots(number, fills);
       layout = computeLetterSize(number, fills, minCircleSize, maxCircleSize);
     }
 
@@ -93,7 +99,9 @@ export class DotRenderer {
     let totalDrawn = 0;
     let placedTiles: HTMLCanvasElement[] = [];
     let restartsRemaining = 4;
+    let attemptNumber = 0;
     outer: while (true) {
+      attemptNumber++;
       totalDrawn = 0;
       placedTiles = [];
       this.sizeRenderCanvas(layout);
@@ -160,6 +168,11 @@ export class DotRenderer {
           }
           restartsRemaining--;
           layout = grown;
+          onResize?.({
+            digitIndex: i,
+            letterSize: grown.letterSize,
+            attempt: attemptNumber,
+          });
           continue outer;
         }
 

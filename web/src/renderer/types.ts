@@ -51,6 +51,15 @@ export interface ImageProgress {
   canvas: HTMLCanvasElement;
 }
 
+export interface ResizeEvent {
+  /** Digit index whose failed fit triggered the resize. */
+  digitIndex: number;
+  /** New per-letter size in pixels. */
+  letterSize: number;
+  /** Attempt number for this render (1 = first resize, 2 = second, …). */
+  attempt: number;
+}
+
 export interface RendererOptions {
   number: number;
   fontFamily: string;
@@ -59,4 +68,5 @@ export interface RendererOptions {
   interLetterDelayMs?: number;
   onLetterProgress?: (p: LetterProgress) => void;
   onImageProgress?: (p: ImageProgress) => void;
+  onResize?: (e: ResizeEvent) => void;
 }

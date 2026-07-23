@@ -9,6 +9,13 @@ const fillCache = new Map<string, number[]>();
  * For a given font family, return an array of length 10 whose i-th entry is
  * the fraction of pixels covered when digit i is rendered. Cached per font.
  * Caller should await document.fonts.ready before first invocation.
+ *
+ * NOTE: this synchronous single-size ink-fraction measurement is a
+ * fallback for when the async calibration data hasn't been loaded yet.
+ * Prefer `distributeDots(number, cal.dotsPerPixel)` when a
+ * `PackingCalibration` is available — actual packing capacity is a
+ * much better proxy for how many dots each digit should get than the
+ * raw dark-pixel count is.
  */
 export function getFillPercentages(fontFamily: string): number[] {
   const cached = fillCache.get(fontFamily);

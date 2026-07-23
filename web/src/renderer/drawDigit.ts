@@ -93,26 +93,52 @@ export async function drawDigit(
   const FrameBudgetMs = 16;
   let lastYield = performance.now();
 
-  // Aggressive-infill state: once random placement fails, we scan the mask
-  // linearly for a free spot. Keeping the scan cursor persistent across
-  // aggressive placements is critical for large N: without it,
-  // findAnyFreeSpot restarts from a fixed origin on every call and does
-  // O(bounds_area) work per placement → O(N²) total, which is minutes
-  // per digit at N=176k. With a persistent monotonic cursor the total
-  // aggressive-infill work amortises to O(bounds_area + placements).
+  // Aggressive-infill state: once random placement fails, we walk a
+  // short "run" of cells in a random direction (H / V / diag) from a
+  // random start, then pick a fresh random start + direction. This
+  // scatters the fallback dots organically instead of the horizontal-
+  // stripe pattern a single row-major sweep produces.
   //
-  // Cursor state is stored on the mask's local grid (row-major cells of
-  // size `aggressiveStep`); we advance one cell per placement and wrap
-  // exactly once through the whole bounds.
+  // Exhaustion detection: we count total *distinct cells visited* across
+  // all runs; once that exceeds the total cell count (with slack for
+  // re-visits during random walks), the digit is treated as full and the
+  // caller can grow letter size and restart.
   const aggressiveStep = Math.max(1, Math.floor(minCircleSize / 2 + 0.5));
   const aggressiveCols = Math.max(1, Math.floor(bounds.width / aggressiveStep));
   const aggressiveRows = Math.max(1, Math.floor(bounds.height / aggressiveStep));
   const aggressiveTotal = aggressiveRows * aggressiveCols;
-  // Start the cursor at a random cell so the first aggressive dots don't
-  // all land in the top-left corner. Once random probes stop working we
-  // just march sequentially from there.
-  let aggressiveCursor = Math.floor(Math.random() * aggressiveTotal);
+  // Short runs (4-12 dots) so any visible chunk stays small and hard to
+  // read as a line. After each run we repick a fresh random start and
+  // direction; between placements within a run we also leave a random
+  // 0-3 cell gap so consecutive dots aren't cheek-by-jowl.
+  const AggressiveRunMin = 4;
+  const AggressiveRunMax = 12;
+  const AggressiveMaxGapCells = 3;
+  const aggressiveVisitBudget = aggressiveTotal * 3;
+  let aggressiveCellsVisited = 0;
   let aggressiveExhausted = false;
+  // Cursor + run state.
+  let ag_gx = Math.floor(Math.random() * aggressiveCols);
+  let ag_gy = Math.floor(Math.random() * aggressiveRows);
+  let ag_dx = 1;
+  let ag_dy = 0;
+  let ag_runLeft = 0;
+  const pickNewRun = (): void => {
+    ag_gx = Math.floor(Math.random() * aggressiveCols);
+    ag_gy = Math.floor(Math.random() * aggressiveRows);
+    // 8 directions: H, V, and 4 diagonals. All unit-magnitude in the grid.
+    const dirs: Array<[number, number]> = [
+      [1, 0], [-1, 0],
+      [0, 1], [0, -1],
+      [1, 1], [1, -1], [-1, 1], [-1, -1],
+    ];
+    const [dx, dy] = dirs[Math.floor(Math.random() * dirs.length)];
+    ag_dx = dx;
+    ag_dy = dy;
+    ag_runLeft =
+      AggressiveRunMin + Math.floor(Math.random() * (AggressiveRunMax - AggressiveRunMin + 1));
+  };
+  pickNewRun();
 
   const isInsideGlyph = (cx: number, cy: number, r: number): boolean => {
     if (!maskAt(mask, cx, cy)) return false;
@@ -210,36 +236,66 @@ export async function drawDigit(
     }
 
     if (!accepted) {
-      // Fallback: sequential scan from the persistent cursor. Amortised
-      // O(1) per placement across the whole aggressive-infill phase.
+      // Fallback: directional random-walk in cells. Try up to a few
+      // consecutive runs to find a spot; each run gives up after
+      // walking off-grid or exhausting its step budget. Once we've
+      // burned through the visit budget for the whole digit, treat it
+      // as full and let the caller grow.
       if (aggressiveExhausted) {
-        break; // whole glyph scanned; caller grows letter size + retries
+        break;
       }
-      const found = findAnyFreeSpot(
-        mask,
-        qt,
-        minCircleSize / 2 + 0.5,
-        maxCircleSize,
-        aggressiveCursor,
-        aggressiveStep,
-        aggressiveCols,
-        aggressiveRows,
-      );
+      let found: { cx: number; cy: number; steps: number } | null = null;
+      // Give ourselves a bounded number of run-restarts per placement so
+      // a nearly-full digit terminates instead of spinning forever.
+      const maxRunsPerPlacement = 6;
+      for (let runAttempt = 0; runAttempt < maxRunsPerPlacement; runAttempt++) {
+        if (ag_runLeft <= 0) pickNewRun();
+        const walkResult = walkForFreeSpot(
+          mask,
+          qt,
+          minCircleSize / 2 + 0.5,
+          maxCircleSize,
+          ag_gx,
+          ag_gy,
+          ag_dx,
+          ag_dy,
+          ag_runLeft,
+          aggressiveStep,
+          aggressiveCols,
+          aggressiveRows,
+        );
+        aggressiveCellsVisited += walkResult.stepsTaken;
+        if (walkResult.spot) {
+          found = { cx: walkResult.spot.cx, cy: walkResult.spot.cy, steps: walkResult.stepsTaken };
+          // Advance cursor past where we landed AND leave a random
+          // 0-3 cell forward gap so the aggressive infill leaves
+          // organic-looking holes instead of dense unbroken bands.
+          const gap = 1 + Math.floor(Math.random() * (AggressiveMaxGapCells + 1));
+          ag_gx = walkResult.spot.gx + ag_dx * gap;
+          ag_gy = walkResult.spot.gy + ag_dy * gap;
+          ag_runLeft -= 1;
+          break;
+        }
+        // Walk failed — force a new run for the next attempt.
+        ag_runLeft = 0;
+        if (aggressiveCellsVisited >= aggressiveVisitBudget) {
+          aggressiveExhausted = true;
+          break;
+        }
+      }
       if (!found) {
-        aggressiveExhausted = true;
+        if (aggressiveExhausted) break;
+        // Ran out of runs for this placement without finding a spot.
+        // The digit is essentially full — bail so caller can grow.
         break;
       }
       cx = found.cx;
       cy = found.cy;
-      // findAnyFreeSpot checked "inside glyph" only at the cell center and
+      // walkForFreeSpot checked "inside glyph" only at the cell center and
       // computed overlap with the smallest radius, so we MUST place at
-      // that same radius — otherwise we'd overlap neighbours (up to
-      // 1.5px) and spill outside the glyph edge. This costs some visual
-      // variety in the crowded tail of a digit, which is a fine trade.
+      // that same radius — otherwise we'd overlap neighbours and spill
+      // outside the glyph edge.
       r = minCircleSize / 2 + 0.5;
-      // Advance the cursor just past the found cell so the next call
-      // resumes right after it rather than re-scanning.
-      aggressiveCursor = (found.nextCursor + 1) % aggressiveTotal;
     }
 
     const color = randomColor();
@@ -277,46 +333,83 @@ export async function drawDigit(
 }
 
 /**
- * Scan the glyph mask starting from `startCursor` (linear index into a
- * `rows × cols` grid of cells of size `step`) for the next cell that is
- * both inside the glyph and clear of any placed dot. Wraps through the
- * full grid exactly once, so the total scan work across all aggressive
- * placements for one digit is O(rows*cols) rather than O(N*rows*cols).
+ * Walk from grid cell (startGx, startGy) in direction (dirX, dirY) for
+ * up to `maxSteps` cells, returning the first cell that is (a) inside
+ * the glyph mask and (b) clear of any placed dot at radius `r`.
  *
- * Returns the found (cx, cy) plus the cursor position where it was
- * found so the caller can resume just past it.
+ * The walk stops early if it steps off the grid — the caller picks a
+ * fresh start + direction and calls again. Returning `stepsTaken` lets
+ * the caller charge the exhaustion budget accurately.
+ *
+ * Using a directional walk instead of a row-major linear scan avoids
+ * the horizontal-stripe pattern that row-major produces when filling
+ * the last few percent of a digit: successive runs land at random
+ * (start, direction) pairs so the aggressive-infill dots scatter
+ * organically over the remaining space.
  */
-function findAnyFreeSpot(
+function walkForFreeSpot(
   mask: GlyphMask,
   qt: Quadtree,
   r: number,
   maxCircleSize: number,
-  startCursor: number,
+  startGx: number,
+  startGy: number,
+  dirX: number,
+  dirY: number,
+  maxSteps: number,
   step: number,
   cols: number,
   rows: number,
-): { cx: number; cy: number; nextCursor: number } | null {
+): {
+  spot: { cx: number; cy: number; gx: number; gy: number } | null;
+  stepsTaken: number;
+} {
   const { bounds } = mask;
-  const total = rows * cols;
-  for (let i = 0; i < total; i++) {
-    const c = (startCursor + i) % total;
-    const gy = (c / cols) | 0;
-    const gx = c - gy * cols;
-    const x = bounds.x + gx * step;
-    const y = bounds.y + gy * step;
-    if (!maskAt(mask, x, y)) continue;
-    const nearby = qt.queryCircle(x, y, r + maxCircleSize / 2 + INT_Offset);
-    let clear = true;
-    for (const d of nearby) {
-      const ddx = d.cx - x;
-      const ddy = d.cy - y;
-      const minDist = d.r + r + INT_Offset / 2;
-      if (ddx * ddx + ddy * ddy < minDist * minDist) {
-        clear = false;
-        break;
+  let gx = startGx;
+  let gy = startGy;
+  let steps = 0;
+  // Perpendicular of the walk direction. For diagonals this is the
+  // other diagonal; for axis-aligned moves this is the other axis.
+  // We add a small (-1, 0, +1) perpendicular offset to each stepped
+  // cell so runs aren't perfectly straight lines — that pixel-jitter
+  // is what actually kills the "stripe" visual artefact.
+  const perpX = -dirY;
+  const perpY = dirX;
+  while (steps < maxSteps) {
+    if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) {
+      return { spot: null, stepsTaken: steps };
+    }
+    // Jitter perpendicular to travel direction: ±1 cell about 60% of
+    // the time, no jitter otherwise. Clamp inside grid.
+    const j = Math.random();
+    const perpOffset = j < 0.3 ? -1 : j < 0.6 ? 1 : 0;
+    const jx = clampGrid(gx + perpX * perpOffset, cols);
+    const jy = clampGrid(gy + perpY * perpOffset, rows);
+    const x = bounds.x + jx * step;
+    const y = bounds.y + jy * step;
+    steps++;
+    if (maskAt(mask, x, y)) {
+      const nearby = qt.queryCircle(x, y, r + maxCircleSize / 2 + INT_Offset);
+      let clear = true;
+      for (const d of nearby) {
+        const ddx = d.cx - x;
+        const ddy = d.cy - y;
+        const minDist = d.r + r + INT_Offset / 2;
+        if (ddx * ddx + ddy * ddy < minDist * minDist) {
+          clear = false;
+          break;
+        }
+      }
+      if (clear) {
+        return { spot: { cx: x, cy: y, gx: jx, gy: jy }, stepsTaken: steps };
       }
     }
-    if (clear) return { cx: x, cy: y, nextCursor: c };
+    gx += dirX;
+    gy += dirY;
   }
-  return null;
+  return { spot: null, stepsTaken: steps };
+}
+
+function clampGrid(v: number, size: number): number {
+  return v < 0 ? 0 : v >= size ? size - 1 : v;
 }
